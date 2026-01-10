@@ -1,21 +1,41 @@
-rm(list=ls())
-library(data.table)
-library(openxlsx)
-library(argparse)
+##----------------------------------------------------------------
+##' Title: B_output_decomposition.R
+##'
+##' Purpose: 
+##----------------------------------------------------------------
 
-parser <- ArgumentParser()
-parser$add_argument("--expend_dcomp_file", help="File where expenditure decompositions are saved.",
-                    type="character")
-parser$add_argument("--daly_dcomp_file", help="File where results of decomposing DALYs with cases are saved",
-                    type="character")
-parser$add_argument("--unif_res_file", help="Directory where unified results (both DALYs and expenditures) should be saved",
-                    type="character")
-parser$add_argument("--output_file", help="File where results are saved", type="character")
-args <- parser$parse_args()
-list2env(args, .GlobalEnv)
-rm(args)
+##----------------------------------------------------------------
+## Clear environment and set library paths
+##----------------------------------------------------------------
+rm(list = ls())
+pacman::p_load(data.table, arrow, tidyverse, glue, openxlsx)
 
-## Define functions for getting the 2.5% and 97.5% quantiles of draws.
+# Set drive paths
+if (Sys.info()["sysname"] == 'Linux'){
+  j <- "/home/j/"
+  h <- paste0("/ihme/homes/",Sys.info()[7],"/")
+  l <- '/ihme/limited_use/'
+} else if (Sys.info()["sysname"] == 'Darwin'){
+  j <- "/Volumes/snfs"
+  h <- paste0("/Volumes/",Sys.info()[7],"/")
+  l <- '/Volumes/limited_use'
+} else {
+  j <- "J:/"
+  h <- "H:/"
+  l <- 'L:/'
+}
+
+##----------------------------------------------------------------
+## 0. Functions
+##----------------------------------------------------------------
+# Ensure directory exists
+ensure_dir_exists <- function(dir_path) {
+  if (!dir.exists(dir_path)) {
+    dir.create(dir_path, recursive = TRUE)
+  }
+}
+
+# Define functions for getting the 2.5% and 97.5% quantiles of draws.
 lower <- function(x){
   quantile(x, probs=0.025)
 }
@@ -29,12 +49,31 @@ upper_iqr <- function(x){
   quantile(x, probs=0.75)
 }
 
+##----------------------------------------------------------------
+## 1. Set directories & filepaths
+##----------------------------------------------------------------
+# Set fp for daly and expenditure decomp csvs
+date_decomp <- "20260109"
+fp_daly <- file.path(h, "/aim_outputs/Aim3/B_decomposition/", date_decomp, "daly_decomp.csv")
+fp_spend <- file.path(h, "/aim_outputs/Aim3/B_decomposition/", date_decomp, "spend_mean_decomp.csv")
+
+# Set output directory
+date_today <- format(Sys.time(), "%Y%m%d")
+dir_output <- file.path(h, "/aim_outputs/Aim3/B_decomposition/", date_today)
+ensure_dir_exists(dir_output)
+
+fp_output <- file.path(dir_output, "final_decomp.csv")
+
+##----------------------------------------------------------------
+## 2. Variable Setting
+##----------------------------------------------------------------
 gdp_per_capita <- 57928.1
 
-
-#################
+##----------------------------------------------------------------
+## 3. Decomposition
+##----------------------------------------------------------------
 ## Read in the expenditure decompositions
-expends <- fread(expend_dcomp_file)
+expends <- fread(fp_spend)
 expends[, "expenditure_end" := NULL]
 
 ## Keep track of the measure variables
@@ -57,7 +96,7 @@ new_exp_meas_cols <- paste0("exp_", exp_meas_cols)
 setnames(expends, exp_meas_cols, new_exp_meas_cols)
 #################
 
-dalys <- fread(daly_dcomp_file)
+dalys <- fread(fp_daly)
 dalys[, dalys_end := NULL]
 
 dalys_meas_cols <- c("delta_dalys", "dalys_start", grep("effect", names(dalys), value=TRUE))
@@ -74,7 +113,7 @@ new_daly_meas_cols <- paste0("daly_", daly_meas_cols)
 setnames(dalys, daly_meas_cols, new_daly_meas_cols)
 
 effect_cols <- c(new_daly_meas_cols, new_exp_meas_cols)
-id_cols <- c("draw", "cause_id", "age_group_id", "sex_id")
+id_cols <- c("draw", "cause_id", "age_name", "sex_id", "location_name")
 
 ## Merge the expenditure and DALY decomposition results together, ditching DALYs for any cause-age-sex combinations where
 ## no expenditure estimates exist and ditching expenditures wherever DALYs don't exist.
@@ -82,11 +121,11 @@ d <- merge(expends, dalys, by=id_cols)
 
 id_cols <- c(id_cols, "cause_name", "amenable")
 meas_cols <- setdiff(names(d), id_cols)
-id_cols <- setdiff(id_cols, c("age_group_id", "sex_id"))
+id_cols <- setdiff(id_cols, c("age_name", "sex_id", "location_name"))
 
-if(!is.null(unif_res_file)){
-  if(!file.exists(unif_res_file)){
-    fwrite(d, unif_res_file)
+if(!is.null(dir_output)){
+  if(!file.exists(dir_output)){
+    fwrite(d, dir_output)
   } else{
     print("Unified results file already exists.")
   }
@@ -332,7 +371,7 @@ quadrant_prop_cols <- paste(c("ICER", "SW", "Dominated", "Cost saving"), "propor
 column_order <- c(column_order, col_cols, "COL median", "COL lower", "COL upper", res_cols, quadrant_prop_cols)
 setcolorder(d, column_order)
 
-if(!file.exists(output_file)){
+if(!file.exists(fp_output)){
   ## Write the big data.table with all columns
-  fwrite(d, output_file)
+  fwrite(d, fp_output)
 }

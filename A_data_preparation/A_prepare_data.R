@@ -2,7 +2,11 @@
 ##' Title: A_prepare_data.R
 ##'
 ##' Purpose: Prepares data for use for Aim 3
-##' Gathers DEX data from Aim 2, DALY data, and Population data
+##' Gathers DEX data from Aim 2, DALY data, and Population data *** I think we need draw data instead
+##' 
+##' Data needed
+##' -DEX draw level data
+##' -Population 
 ##----------------------------------------------------------------
 
 ##----------------------------------------------------------------
