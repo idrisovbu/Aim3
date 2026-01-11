@@ -24,7 +24,10 @@ source("/ihme/cc_resources/libraries/current/r/get_population.R")
 source("/ihme/cc_resources/libraries/current/r/get_location_metadata.R")
 source("/ihme/cc_resources/libraries/current/r/get_age_metadata.R")
 source("/ihme/cc_resources/libraries/current/r/get_model_estimates.R")
+source("/ihme/cc_resources/libraries/current/r/get_cause_metadata.R")
 source("/ihme/cc_resources/libraries/gbd_sunset/r/get_draws.R")
+
+df_cause <- get_cause_metadata(cause_set_id = 2, release_id = 16)
 
 ##----------------------------------------------------------------
 ## 0.1 Functions
@@ -40,6 +43,7 @@ ensure_path <- function(filepath) {
 ##----------------------------------------------------------------
 ## 0.2 Set output directory
 ##----------------------------------------------------------------
+# Output path
 date_today <- format(Sys.Date(), "%Y%m%d")
 dir_out <- paste0("/ihme/homes/idrisov/aim_outputs/Aim3/A_data_preparation/", date_today)
 
@@ -109,7 +113,7 @@ df_dalys <- do.call(
   c(get_draw_args, list(source = "dalynator", metric_id = 1, measure_id = 2))
 )
 
-# Pull Population COUNTS
+# Pull Population draw COUNTS TBD - waiting for response on Slack
 # df_dalys <- do.call(
 #   get_draws,
 #   c(get_draw_args, list(source = "dalynator", metric_id = 1, measure_id = 2))
@@ -124,121 +128,105 @@ df_population <- get_population(release_id = rel_id,
                                 sex_id = sex_ids
 )
 
+df_population <- left_join(
+  x = df_population,
+  y = df_state_loc_ids
+)
+
 ##----------------------------------------------------------------
 ## 3. Save Draw data so we don't have to spend a million years pulling it again
 ##----------------------------------------------------------------
-write_parquet(df_prevalence, file.path(dir_out, "draws_prevalence.parquet"))
-write_parquet(df_dalys, file.path(dir_out, "draws_dalys.parquet"))
-
-
-
-
-
-
-
-
+write_parquet(df_prevalence, file.path(dir_out, "draws_rates_prevalence.parquet"))
+write_parquet(df_dalys, file.path(dir_out, "draws_counts_dalys.parquet"))
+write_parquet(df_population, file.path(dir_out, "counts_population.parquet"))
 
 ##----------------------------------------------------------------
-## 2. Pull Data
+## 4. Convert prevalence rates to counts using population data
 ##----------------------------------------------------------------
-# Prevalence
-df_prevalence <- get_outputs(topic = "cause", 
-                             release_id=rel_id,
-                             location_id=list_state_loc_ids, 
-                             year_id=year_ids, 
-                             age_group_id="all",
-                             sex_id=sex_ids, 
-                             measure_id=5, # 5 = Prevalence
-                             metric_id=1, # 1 = Number
-                             cause_id=cause_ids, 
-                             location_set_id=35
+# Merge prevalence rates to population counts
+df_prevalence_counts <- merge(
+  df_prevalence,
+  df_population[, .(location_id, year_id, sex_id, age_group_id, population)],
+  by = c("location_id", "year_id", "sex_id", "age_group_id"),
+  all.x = TRUE
 )
 
-df_prevalence <- df_prevalence %>%
-  select(c("age_group_id", "cause_id", "location_id", "measure_id", "metric_id", 
-           "sex_id", "year_id", "acause", "age_group_name", "cause_name", "location_name", "val"))
+# Determine draw columns
+draw_cols <- grep("^draw_\\d+$", names(df_prevalence_counts), value = TRUE)
 
-df_prevalence <- df_prevalence %>%
-  rename(
-    "prevalence" = "val"
+# Multiply each draw column by the respective population value (we don't divide by 100,000, it seems when we return rate it's not by 100,000?)
+df_prevalence_counts <- df_prevalence_counts %>%
+  mutate(
+    across(
+      all_of(draw_cols),
+      ~ .x * population
+    )
   )
 
-# Mortality
-df_mortality <- get_outputs(topic = "cause", 
-                            release_id=rel_id, 
-                            location_id=list_state_loc_ids,
-                            year_id=year_ids, 
-                            age_group_id="all", 
-                            sex_id=sex_ids, 
-                            measure_id=1, # 1 = Deaths
-                            metric_id=1, # 1 = Number
-                            cause_id=cause_ids, 
-                            location_set_id=35
-)
+# # Compare against prevalence summarized counts
+# df_prevalence_sum_counts <- get_outputs(topic = "cause", 
+#                              release_id=rel_id,
+#                              location_id=list_state_loc_ids, 
+#                              year_id=year_ids, 
+#                              age_group_id="all",
+#                              sex_id=sex_ids, 
+#                              measure_id=5, # 5 = Prevalence
+#                              metric_id=1, # 1 = Number
+#                              cause_id=cause_ids, 
+#                              location_set_id=35
+# )
+# 
+# View(df_prevalence_sum_counts %>% filter(age_group_id == 10) %>% filter(location_id == 523) %>% filter(year_id == 2010) %>% filter(sex_id == 1))
+# View(df_prevalence_counts %>% filter(age_group_id == 10) %>% filter(location_id == 523) %>% filter(year_id == 2010) %>% filter(sex_id == 1))
 
-df_mortality <- df_mortality %>%
-  select(c("age_group_id", "cause_id", "location_id", "measure_id", "metric_id", 
-           "sex_id", "year_id", "acause", "age_group_name", "cause_name", "location_name", "val"))
-
-df_mortality <- df_mortality %>%
-  rename(
-    "mortality" = "val"
-  )
-
-# Population
-df_population <- get_population(release_id = rel_id,
-                                age_group_id = "all",
-                                location_id = list_state_loc_ids,
-                                location_set_id = 35,
-                                year_id = year_ids,
-                                sex_id = sex_ids
-)
-
+##----------------------------------------------------------------
+## 5. Pivot & merge data so each draw it on it's own row
+##----------------------------------------------------------------
 # DALYs
-df_dalys <- get_outputs(topic = "cause", 
-                        release_id=rel_id,
-                        location_id=list_state_loc_ids, 
-                        year_id=year_ids, 
-                        age_group_id="all",
-                        sex_id=sex_ids, 
-                        measure_id=2, # 2 = DALYs
-                        metric_id=1, # 1 = Number
-                        cause_id=cause_ids, 
-                        location_set_id=35
-)
+df_dalys_long <- df_dalys %>%
+  select(!c("version_id", "measure_id", "metric_id")) %>%
+  pivot_longer(
+    cols = matches("^draw_\\d+$"),
+    names_to = "draw",
+    names_prefix = "draw_",
+    values_to = "value"
+  ) %>%
+  mutate(draw = as.integer(draw))
 
-df_dalys <- df_dalys %>%
-  select(c("age_group_id", "cause_id", "location_id", "measure_id", "metric_id", 
-           "sex_id", "year_id", "acause", "age_group_name", "cause_name", "location_name", "val"))
+df_dalys_long <- df_dalys_long %>%
+  setnames(old = "value", new = "DALYs_count")
 
-df_dalys <- df_dalys %>%
-  rename(
-    "DALYs" = "val"
-  )
+# Prevalence
+df_prevalence_long <- df_prevalence_counts %>%
+  select(!c("version_id", "measure_id", "metric_id", "population")) %>%
+  pivot_longer(
+    cols = matches("^draw_\\d+$"),
+    names_to = "draw",
+    names_prefix = "draw_",
+    values_to = "value"
+  ) %>%
+  mutate(draw = as.integer(draw))
+
+df_prevalence_long <- df_prevalence_long %>%
+  setnames(old = "value", new = "prevalence_count")
+
+# View(head(df_dalys_long))
+# View(head(df_prevalence_long))
 
 # Merge
-df_m <- left_join(
-  x = df_prevalence %>% select(!c("measure_id")),
-  y = df_mortality %>% select(!c("measure_id")),
-  by = c("age_group_id", "age_group_name", "cause_id", "acause", "cause_name", "location_id", "location_name", "sex_id", "year_id", "metric_id"),
+df <- left_join(
+  x = df_dalys_long,
+  y = df_prevalence_long,
+  by = c("age_group_id", "cause_id", "location_id", "sex_id", "year_id", "draw")
 )
 
-df_m <- left_join(
-  x = df_m,
-  y = df_population %>% select(!("run_id")),
-  by = c("age_group_id", "location_id", "year_id", "sex_id")
-)
+# View(head(df))
 
-df_m <- left_join(
-  x = df_m,
-  y = df_dalys %>% select(!c("measure_id")),
-  by = c("age_group_id", "age_group_name", "cause_id", "acause", "cause_name", "location_id", "location_name", "sex_id", "year_id", "metric_id"),
-)
+############### LEFT OFF HERE, NEED TO COLLAPSE ON AGE GROUPS ############### 
 
-
-# Check where we have NAs
-# View(df_m[!complete.cases(df_m), ]) # Looks like we only have NA data for Early and Late Neonatal for HIV, otherwise all other rows have data
-
+##----------------------------------------------------------------
+## 6. Collapse on the 0 - <1 and 1 - <5 age groups 
+##----------------------------------------------------------------
 # Collapse on the 0 - <1 and 1 - <5 age groups 
 # Age groups in the DEX / USHD data
 # c("0 - <1", "1 - <5", "10 - <15", "15 - <20", "20 - <25", "25 - <30", 
@@ -280,34 +268,15 @@ df_final <- rbind(df_age_collapse, df_age_non_collapse)
 df_final <- df_final %>%
   select(!c("age_name_group", "age_group_id"))
 
-##----------------------------------------------------------------
-## 3. Create Population Weights
-## TODO - need to decide which year_id we are going to use for this if we want to make our own weights that have sex to keep sex in the FA model
-##----------------------------------------------------------------
-# df_weights <- df_final %>%
-#   group_by(age_group_name, sex_id) %>%
-#   summarise(
-#     population = sum(population, na.rm = TRUE),
-#     .groups = "drop"
-#   ) %>%
-#   group_by(sex_id) %>%
-#   mutate(
-#     pop_weight = population / sum(population)
-#   ) %>%
-#   ungroup()
 
 ##----------------------------------------------------------------
-## 4. Save data
+## 7. Save data
 ##----------------------------------------------------------------
 # Prevalence, Mortality, & Population data
 fn_main <- file.path(dir_out, "prev_mort_pop_data.parquet")
 
 write_parquet(df_final, fn_main)
 
-# # Population weights
-# fn_weights <- file.path(dir_out, "age_weights.parquet")
-# 
-# write_parquet(df_weights, fn_weights)
 
 
 
